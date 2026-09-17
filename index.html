@@ -810,6 +810,13 @@
       if (q.type === 'sort') {
         q.words = toTrimmedStringArray(q.words);
         q.correctOrder = toTrimmedStringArray(q.correctOrder);
+        // acceptableOrders: 語順が変わっても意味が変わらない問題（様態副詞の移動など）用の、
+        // 正解として許容する語順のバリエーション。無ければ correctOrder のみが正解。
+        if (Array.isArray(q.acceptableOrders)) {
+          q.acceptableOrders = q.acceptableOrders
+            .filter(order => Array.isArray(order))
+            .map(order => toTrimmedStringArray(order));
+        }
       } else if (q.type === 'choice') {
         if (typeof q.questionEn === 'string') q.questionEn = q.questionEn.normalize('NFKC').trim();
         q.choices = toTrimmedStringArray(q.choices);
@@ -873,6 +880,23 @@
 
         if (Array.isArray(q.words) && Array.isArray(q.correctOrder) && !sameMultiset(q.words, q.correctOrder)) {
           errors.push(`${label}: words と correctOrder の集合が不一致`);
+        }
+
+        // acceptableOrders の各要素も words と同じ語の多重集合であることを検証する。
+        // ここがズレると「正解のはずなのに不正解になる」「words に無い語で正解になる」といった
+        // 見えにくい不具合につながるため、通常のcorrectOrderと同じ厳格さでチェックする。
+        if (q.acceptableOrders !== undefined) {
+          if (!Array.isArray(q.acceptableOrders)) {
+            errors.push(`${label}: acceptableOrders 不正`);
+          } else {
+            q.acceptableOrders.forEach((order, orderIndex) => {
+              if (!Array.isArray(order) || order.length < 2 || !order.every(w => typeof w === 'string' && w.trim())) {
+                errors.push(`${label}: acceptableOrders[${orderIndex}] 不正`);
+              } else if (Array.isArray(q.words) && !sameMultiset(q.words, order)) {
+                errors.push(`${label}: acceptableOrders[${orderIndex}] が words と語の集合が不一致`);
+              }
+            });
+          }
         }
       }
 
@@ -2152,7 +2176,14 @@
     function resetSort() { if (selectedWords.length > 0) { remainingWords = remainingWords.concat(selectedWords); selectedWords = []; renderSortBoard(); } }
     function checkSortAnswer() {
       if (isAnswerLocked) return;
-      if (selectedWords.join(' ') === currentQuestion.correctOrder.join(' ')) handleCorrect();
+      const submitted = selectedWords.join(' ');
+      // acceptableOrders があれば、そのいずれかと一致すれば正解として扱う。
+      // 無い問題は従来通り correctOrder 一本のみで判定する（挙動は変わらない）。
+      const candidates = (Array.isArray(currentQuestion.acceptableOrders) && currentQuestion.acceptableOrders.length > 0)
+        ? currentQuestion.acceptableOrders
+        : [currentQuestion.correctOrder];
+      const isMatch = candidates.some(order => order.join(' ') === submitted);
+      if (isMatch) handleCorrect();
       else handleFail('wrong');
     }
 
