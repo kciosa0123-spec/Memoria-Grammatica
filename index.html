@@ -125,6 +125,11 @@
     .analytics-empty { font-size: 0.85rem; color: var(--text-muted); line-height: 1.5; margin: 0; }
     .analytics-question { font-size: 0.84rem; color: var(--primary); line-height: 1.45; }
     .analytics-question-meta { display: block; color: var(--text-muted); font-size: 0.74rem; margin-top: 3px; }
+    .analytics-study-btn {
+      margin-top: 8px; background: #FFF; border: 1px solid var(--accent); color: var(--accent);
+      padding: 6px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 700; cursor: pointer;
+    }
+    .analytics-study-btn:active { transform: translateY(1px); }
 
     /* スタートボタン */
     .start-btn {
@@ -226,6 +231,11 @@
       background: rgba(44, 62, 80, 0.9); flex-direction: column; justify-content: center;
       align-items: center; padding: 20px; z-index: 30;
     }
+    #save-error-modal {
+      display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(44, 62, 80, 0.9); flex-direction: column; justify-content: center;
+      align-items: center; padding: 20px; z-index: 50;
+    }
     .modal-content { background: #FFF; width: 100%; max-width: 400px; padding: 30px 20px; border-radius: 12px; text-align: center; }
     .result-title { font-size: 1.8rem; font-weight: bold; margin-bottom: 15px; }
     .result-correct { color: var(--correct); }
@@ -239,6 +249,17 @@
       font-size: 1.05rem; font-weight: 700; margin-bottom: 16px; text-align: left;
       line-height: 1.5; word-break: break-word;
     }
+    /* 不正解時の「あなたの解答／正解」比較表示 */
+    .correct-reveal.compare { background: #F8FAFC; border-color: #E2E8F0; color: var(--text-main); font-weight: 400; font-size: 1rem; }
+    .answer-row { margin-bottom: 8px; line-height: 1.9; }
+    .answer-label { display: block; font-size: 0.8rem; font-weight: 700; color: var(--text-muted); line-height: 1.4; }
+    .answer-tokens { font-size: 1.05rem; font-weight: 600; color: var(--primary); }
+    .answer-token { margin-right: 0.35em; }
+    .answer-token.off { color: var(--wrong); text-decoration: underline wavy var(--wrong); text-underline-offset: 4px; }
+    .answer-token.fix { color: var(--correct); text-decoration: underline solid var(--correct); text-decoration-thickness: 2px; text-underline-offset: 4px; }
+    .answer-empty { color: var(--text-muted); }
+    .answer-legend { font-size: 0.78rem; color: var(--text-muted); margin: 4px 0 0; line-height: 1.5; }
+    .session-mode-label { text-align: center; font-size: 0.82rem; font-weight: 700; color: var(--accent); margin: -24px 0 16px; }
     .next-btn { background: var(--accent); color: #FFF; border: none; padding: 15px 30px; font-size: 1.1rem; font-weight: bold; border-radius: 8px; cursor: pointer; width: 100%; }
 
     /* 学習完了画面 */
@@ -402,6 +423,7 @@
       <div class="timer-container"><div class="timer-bar" id="timer-bar"></div></div>
       
       <main>
+        <div class="session-mode-label hidden" id="session-mode-label"></div>
         <div class="question-ja" id="question-text" tabindex="-1"></div>
 
         <div class="sort-area" id="mode-sort">
@@ -448,6 +470,15 @@
       </div>
     </div>
 
+    <div id="save-error-modal" role="alertdialog" aria-modal="true" aria-labelledby="save-error-title" aria-describedby="save-error-text">
+      <div class="modal-content">
+        <div class="result-title result-wrong" id="save-error-title">保存できませんでした</div>
+        <p class="explanation-text" id="save-error-text">この回答の学習記録を端末に保存できませんでした。端末の空き容量が不足しているか、ブラウザの設定で保存が制限されている可能性があります。<br>「保存せずに中断する」を選ぶと、この問題は次回もう一度出題されます。</p>
+        <button class="next-btn" id="save-retry-btn" onclick="retrySaveAnswer()">もう一度保存する</button>
+        <button class="rest-btn" id="save-abort-btn" onclick="abortUnsavedAnswer()">保存せずに中断する</button>
+      </div>
+    </div>
+
     <div id="all-clear-screen">
       <div class="clear-icon" id="clear-icon">☕️</div>
       <div class="clear-text" id="clear-text">Session Complete</div>
@@ -463,6 +494,12 @@
   <script>
     // Memoria Grammatica Lite v1：学生配布用。AI生成・任意URL読込は搭載しない。
     // Final candidate: 午前4時を学習日の境界として、復習・新規枠・ストリーク・弱点分析を統一。
+    // v1.1（2026-10）：学生要望により、①弱点分析の単元・テーマから直接学習、②不正解時に自分の解答との比較表示を追加。
+    // v1.1.1（2026-10）：①バックアップ復元を全項目検証＋失敗時の書き戻しに、②correctOrder を常に正解候補に含める、
+    //   ③回答の保存失敗時は次へ進まず再保存／中断を選ばせる、④30問超の単元で未出題問題に進めるよう選び方を調整。
+    // v1.1.2（2026-10）：①復元失敗時は書き換えた項目だけを戻す（未変更の記録を消さない）、
+    //   ②中断後にページを閉じても回答を再保存しない、保存失敗画面の説明を実際の保存状態に合わせる。
+    // v1.1.3（2026-10）：保存失敗画面の説明文を修正（学習履歴だけ保存済みの場合にも合う表現へ）。
     const STORAGE_KEY = 'memoriaGrammaticaLite_progress_v1';
     const ACTIVITY_KEY = 'memoriaGrammaticaLite_activity_v1';   // 学習日ごとのレビュー回数（ストリーク・ヒートマップ用）
     const ANALYTICS_KEY = 'memoriaGrammaticaLite_analytics_v1'; // 問題別・単元別の弱点分析用累積データ
@@ -501,6 +538,7 @@
     const NEW_CARDS_PER_DAY = 20;             // 既定の新規導入上限/日
     const MAX_USER_NEW_CARDS_PER_DAY = 40;    // 学生プリセット値の物理クランプ（教師デッキ値は対象外）
     const NEW_CARD_PRESETS = [0, 10, 20, 30]; // 0=新規停止（復習のみ）
+    const FOCUS_SESSION_MAX = 30;             // 単元・テーマ別学習の1回あたり最大出題数（大きな読込デッキ対策）
 
     // ----------------------------------------------------
     // 問題データ：questions_university_basic_v1.js があればそれを使用。
@@ -583,13 +621,14 @@
       }
     }
 
-    function safeSaveJSON(key, value) {
+    // quiet=true の場合は alert を出さない（回答記録の保存失敗は専用の画面でまとめて知らせるため）。
+    function safeSaveJSON(key, value, quiet = false) {
       try {
         localStorage.setItem(key, JSON.stringify(value));
         return true;
       } catch (e) {
         console.warn(`${key} の保存に失敗しました。`, e);
-        alert('学習データの保存に失敗しました。端末の空き容量やブラウザ設定を確認してください。');
+        if (!quiet) alert('学習データの保存に失敗しました。端末の空き容量やブラウザ設定を確認してください。');
         return false;
       }
     }
@@ -1297,13 +1336,60 @@
       return payload.data;
     }
 
-    function restoreJSONKey(key, value) {
-      if (value === null || value === undefined) {
-        localStorage.removeItem(key);
-        return true;
+    // 復元対象の全項目を、書き込む前にすべて検証して書き込み内容（文字列）を確定する。
+    // 1項目でも不正なら例外を投げ、端末の記録には一切触れない。
+    function buildRestorePlan(data) {
+      const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+      const entries = [
+        { key: STORAGE_KEY, label: '学習進捗', value: data.progress ?? {} },
+        { key: ACTIVITY_KEY, label: '学習履歴', value: data.activity ?? {} },
+        { key: ANALYTICS_KEY, label: '弱点分析', value: data.analytics ?? { schemaVersion: 1, cards: {} } },
+        { key: ACHIEVEMENT_KEY, label: '達成記録', value: data.achievements ?? { schemaVersion: 1, perfectSessionCount: 0, perfectSessionDates: {} } },
+        { key: CURRENT_DECK_KEY, label: '保存済みデッキ', value: data.currentDeck ?? null, nullable: true, allowArray: true },
+        { key: ACTIVE_SOURCE_KEY, label: '前回使用デッキ設定', value: data.activeSource ?? null, nullable: true },
+        { key: PREFS_KEY, label: '学習設定', value: data.prefs ?? {} }
+      ];
+      const problems = [];
+      const plan = entries.map(entry => {
+        if (entry.value === null) return { key: entry.key, raw: null };   // null = その項目を削除
+        const shapeOk = isPlainObject(entry.value) || (entry.allowArray && Array.isArray(entry.value));
+        if (!shapeOk) { problems.push(`${entry.label} の形式が不正です`); return null; }
+        return { key: entry.key, raw: JSON.stringify(entry.value) };
+      });
+      if (problems.length > 0) {
+        const error = new Error('バックアップの内容に不正な項目があるため、復元しませんでした（現在の記録は変更されていません）');
+        error.details = problems;
+        throw error;
       }
-      if (typeof value !== 'object') throw new Error(`${key} の復元データが不正です`);
-      return safeSaveJSON(key, value);
+      return plan;
+    }
+
+    // 全項目を書き込む。途中で失敗したら、実際に書き換えた項目だけを元に戻す。
+    // まだ書き換えていない項目には一切触れない（書き戻しが失敗しても、元の記録を広く失わないため）。
+    function applyRestorePlan(plan) {
+      const changed = [];   // { key, oldRaw } 書き換えに成功した項目
+      try {
+        plan.forEach(item => {
+          const oldRaw = localStorage.getItem(item.key);
+          if (item.raw === null) localStorage.removeItem(item.key);
+          else localStorage.setItem(item.key, item.raw);   // 失敗時は例外。その項目自体は変わらない
+          changed.push({ key: item.key, oldRaw });
+        });
+        return { ok: true };
+      } catch (e) {
+        if (changed.length === 0) return { ok: false, rolledBack: true, error: e };   // 何も書き換えていない
+        let rolledBack = true;
+        // ①元々無かった項目（今回新しく書いたもの）を先に消す。元の記録を失わずに空きを作れる。
+        changed.filter(c => c.oldRaw === null).forEach(c => {
+          try { localStorage.removeItem(c.key); } catch (err) { rolledBack = false; }
+        });
+        // ②元の値があった項目を書き戻す。失敗した項目は削除せず、そのまま残す。
+        changed.filter(c => c.oldRaw !== null).forEach(c => {
+          try { localStorage.setItem(c.key, c.oldRaw); }
+          catch (err) { rolledBack = false; console.error(`${c.key} を元に戻せませんでした。`, err); }
+        });
+        return { ok: false, rolledBack, error: e };
+      }
     }
 
     async function handleBackupFileSelected(event) {
@@ -1316,22 +1402,25 @@
           throw new Error(`バックアップファイルが大きすぎます。上限は ${Math.round(MAX_BACKUP_FILE_SIZE / 1024 / 1024)}MB です`);
         }
         const data = validateBackupPayload(await parseJSONText(await file.text(), 'バックアップファイル'));
+        const plan = buildRestorePlan(data);   // 確認ダイアログの前に全項目を検証する
         const ok = confirm(`現在の学習進捗・学習履歴・弱点分析・保存済みデッキ・前回使用デッキ設定をバックアップ内容で上書きします。よろしいですか？
 
 現在の状態を残したい場合は、先に「バックアップを書き出す」を実行してください。`);
         if (!ok) return;
 
-        restoreJSONKey(STORAGE_KEY, data.progress || {});
-        restoreJSONKey(ACTIVITY_KEY, data.activity || {});
-        restoreJSONKey(ANALYTICS_KEY, data.analytics || { schemaVersion: 1, cards: {} });
-        restoreJSONKey(ACHIEVEMENT_KEY, data.achievements || { schemaVersion: 1, perfectSessionCount: 0, perfectSessionDates: {} });
-        restoreJSONKey(CURRENT_DECK_KEY, data.currentDeck || null);
-        restoreJSONKey(ACTIVE_SOURCE_KEY, data.activeSource || null);
-        restoreJSONKey(PREFS_KEY, data.prefs || {});
+        const result = applyRestorePlan(plan);
+        if (!result.ok) {
+          console.error('バックアップの書き込みに失敗しました。', result.error);
+          renderSimpleReport('error', result.rolledBack
+            ? 'バックアップを復元できませんでした。現在の記録は復元前の状態のまま残っています。'
+            : 'バックアップを復元できず、一部の項目を元に戻せませんでした。端末の空き容量を確保してから、もう一度バックアップから復元してください。',
+            ['端末の空き容量やブラウザの保存設定を確認してください。', String(result.error && result.error.message || result.error)]);
+          return;   // 失敗時は再読み込みしない
+        }
         location.reload();
       } catch (e) {
         console.error('バックアップ復元に失敗しました。', e);
-        renderSimpleReport('error', 'バックアップ復元に失敗しました。', [String(e.message || e)]);
+        renderSimpleReport('error', 'バックアップ復元に失敗しました。', [String(e.message || e), ...(Array.isArray(e.details) ? e.details : [])]);
       } finally {
         input.value = '';
       }
@@ -1377,7 +1466,14 @@
     let timeLimit = 15000; let timeLeft = 15000;
     let currentSm2Score = 3;
     let currentNextReviewDays = null;
-    let isAnswerLocked = false; 
+    let isAnswerLocked = false;
+    let sessionMode = 'daily';             // 'daily'（今日の学習）| 'focus'（単元・テーマ別学習）
+    let focusSessionInfo = null;           // { label, countsTowardNewCap }
+    let currentIsPracticeAhead = false;    // 復習日前の問題を先取りで解いているか
+    let currentScheduleNote = '';          // 先取り学習時の予定の扱い：'unchanged' | 'advanced' | ''
+    let currentUserAnswer = null;          // 不正解時に表示する学習者の解答
+    let currentNewBudget = 0;              // initApp 時点の今日の残り新規枠
+    let currentAllowUserOverride = true;   // 学生による新規枚数の変更が許可されているか
 
     // ----------------------------------------------------
     // アプリ起動・ダッシュボード構築
@@ -1447,10 +1543,13 @@
       QUIZ.forEach(q => {
         const record = savedData[getProgressKey(q)];
         if (!record) { newCards.push(q); return; }                 // 未回答＝新規候補
-        if (record.firstSeenDate === todayKey) introducedToday++;  // 今日導入済みは枠を消費
+        // 今日導入済みは枠を消費。ただし単元・テーマ別学習で導入した問題（introducedBy:'focus'）は除く。
+        if (record.firstSeenDate === todayKey && record.introducedBy !== 'focus') introducedToday++;
         if (!record.nextReviewTime || record.nextReviewTime <= now) dueReviews.push(q);
       });
       const newBudget = Math.max(0, effectiveNewCap - introducedToday);
+      currentNewBudget = newBudget;
+      currentAllowUserOverride = allowUserOverride;
       sessionMasterList = [...dueReviews, ...newCards.slice(0, newBudget)];
 
       // ダッシュボード更新（件数はマスターリスト基準＝再出題で水増しされない）
@@ -1510,12 +1609,19 @@
       return nextDate.getTime();
     }
 
+    // 指定時刻が、現在の学習日から何学習日後かを返す（先取り学習の表示用。最小1）。
+    function studyDaysUntil(time) {
+      const from = getStudyDayReference(new Date()); from.setHours(0, 0, 0, 0);
+      const to = getStudyDayReference(new Date(Number(time) || Date.now())); to.setHours(0, 0, 0, 0);
+      return Math.max(1, Math.round((to.getTime() - from.getTime()) / 86400000));
+    }
+
     // 学習アクティビティ（学習日 → その日のレビュー回数）
     function getActivity() { return safeLoadJSON(ACTIVITY_KEY); }
     function recordActivity() {                       // 採点1回ごとに当日のレビュー数を加算
       const activity = getActivity(); const key = studyDateKey(new Date());
       activity[key] = (activity[key] || 0) + 1;
-      safeSaveJSON(ACTIVITY_KEY, activity);
+      return safeSaveJSON(ACTIVITY_KEY, activity, true);
     }
 
     // パーフェクトセッション（不正解・時間切れなしで完了）の達成記録
@@ -1626,7 +1732,7 @@
       record.lastRating = ({ 1: 'relearn', 2: 'hard', 3: 'good', 4: 'easy' })[score] || 'unknown';
       record.lastAnsweredAt = Date.now();
       data.cards[key] = record;
-      return safeSaveJSON(ANALYTICS_KEY, data);
+      return safeSaveJSON(ANALYTICS_KEY, data, true);
     }
 
     function aggregateAnalytics(level) {
@@ -1682,7 +1788,7 @@
       });
     }
 
-    function renderAnalyticsRows(containerId, groups) {
+    function renderAnalyticsRows(containerId, groups, level) {
       const container = document.getElementById(containerId);
       if (!container) return;
       container.innerHTML = '';
@@ -1713,7 +1819,18 @@
         const meta = document.createElement('div'); meta.className = 'analytics-meta';
         const accuracyText = group.firstAccuracy === null ? '初回正答率: 未回答' : `初回正答率: ${group.firstAccuracy}%（${group.firstCorrectCount}/${group.firstAttempts}）`;
         meta.textContent = `${accuracyText} / 誤答 ${group.wrongCount}回 / Hard ${group.hardCount}回 / 回答済み ${group.attemptedCards}/${group.cardCount}問`;
-        row.appendChild(meta); container.appendChild(row);
+        row.appendChild(meta);
+
+        // この単元・テーマだけを学習するボタン（学生要望）
+        const studyLabel = title.textContent;
+        const studyBtn = document.createElement('button');
+        studyBtn.type = 'button'; studyBtn.className = 'analytics-study-btn';
+        studyBtn.textContent = (level === 'unit') ? 'この単元を学習' : 'このテーマを学習';
+        studyBtn.setAttribute('aria-label', `${studyLabel} を学習`);
+        studyBtn.onclick = () => startFocusSession(level, group.key, studyLabel);
+        row.appendChild(studyBtn);
+
+        container.appendChild(row);
       });
     }
 
@@ -1769,8 +1886,8 @@
           recommendation.textContent = `よく定着しています。集計対象単元のうち最も低い初回正答率も ${weakest.firstAccuracy}% です。`;
         }
       }
-      renderAnalyticsRows('analytics-unit-list', units);
-      renderAnalyticsRows('analytics-theme-list', themes);
+      renderAnalyticsRows('analytics-unit-list', units, 'unit');
+      renderAnalyticsRows('analytics-theme-list', themes, 'theme');
       renderDifficultQuestions();
     }
 
@@ -1828,11 +1945,19 @@
 
     // マスターリストから生きたキューを生成（lapses をリセット）
     function buildSessionQueue() {
-      sessionQueue = sessionMasterList.map(q => ({ q, lapses: 0 }));
+      sessionQueue = sessionMasterList.map(q => ({ q, lapses: 0, practiceAhead: false }));
     }
 
     async function returnToDashboard() {
       resetResultUI();
+      // 回答状態を終了させる。これを残すと、ページを閉じたときの保存処理（pagehide）が
+      // 中断済みの回答を改めて保存し、復習間隔が二重に進むことがある。
+      currentQuestion = null;
+      isAnswerLocked = false;
+      pendingAnswerSave = null;
+      currentNextReviewDays = null;
+      sessionMode = 'daily';
+      focusSessionInfo = null;
       document.getElementById('game-screen').style.display = 'none';
       document.getElementById('all-clear-screen').style.display = 'none';
       document.getElementById('dashboard-screen').style.display = 'flex';
@@ -1863,7 +1988,8 @@
       // 通常は result-modal 表示前に finalizeAnswer 済み。
       // 未保存状態で呼ばれた場合に備えた保険として残す。
       if (isAnswerLocked && currentQuestion && currentNextReviewDays === null) {
-        finalizeAnswer(currentSm2Score);
+        commitAnswer(currentSm2Score, () => { returnToDashboard(); });
+        return;
       }
       await returnToDashboard();
     }
@@ -1878,9 +2004,104 @@
         return;
       }
 
+      sessionMode = 'daily';
+      focusSessionInfo = null;
+      enterGameScreen();
+    }
+
+    // ----------------------------------------------------
+    // 単元・テーマ別学習（弱点分析の各行から開始）
+    // 出題順：①今日が復習日の問題 → ②学習済みで復習日前の問題（先取り） → ③未出題の問題
+    // ----------------------------------------------------
+    function buildFocusSessionPlan(level, groupKey) {
+      const savedData = safeLoadJSON(STORAGE_KEY);
+      const now = Date.now();
+      const due = []; const ahead = []; const fresh = [];
+
+      QUIZ.forEach(q => {
+        const meta = getQuestionAnalyticsMeta(q);
+        const key = (level === 'unit') ? meta.unitId : `${meta.unitId}::${meta.themeId}`;
+        if (key !== groupKey) return;
+        const record = savedData[getProgressKey(q)];
+        if (!record || typeof record !== 'object') fresh.push(q);
+        else if (!record.nextReviewTime || record.nextReviewTime <= now) due.push(q);
+        else ahead.push({ q, at: Number(record.nextReviewTime) || 0 });
+      });
+      ahead.sort((a, b) => a.at - b.at);   // 復習日が近いものから
+
+      // 先生が新規枚数を固定したデッキでは、今日の残り新規枠の範囲でだけ未出題問題を出す。
+      const freshAllowed = currentAllowUserOverride ? fresh : fresh.slice(0, Math.max(0, currentNewBudget));
+      const totalCount = due.length + ahead.length + freshAllowed.length;
+
+      let dueTake = due; let aheadTake = ahead.map(item => item.q); let freshTake = freshAllowed;
+      if (totalCount > FOCUS_SESSION_MAX) {
+        // 上限を超える場合だけ枠を配分する。先頭から順に取るだけだと、先取り問題（Good で予定が変わらない）が
+        // 毎回同じ顔ぶれで枠を占め、未出題の問題にいつまでも進めなくなるため。
+        //   ①今日が復習日の問題を最優先 → ②残り枠の半分以上を未出題の問題へ（足りなければ先取りへ回す）
+        //   → ③残りを先取り問題から無作為に選ぶ（毎回同じ問題に偏らないように）
+        dueTake = due.slice(0, FOCUS_SESSION_MAX);
+        const room = FOCUS_SESSION_MAX - dueTake.length;
+        const freshCount = Math.min(freshAllowed.length, Math.max(Math.ceil(room / 2), room - ahead.length));
+        freshTake = freshAllowed.slice(0, freshCount);
+        aheadTake = shuffleArray(ahead.map(item => item.q)).slice(0, Math.max(0, room - freshCount));
+      }
+      const items = [
+        ...dueTake.map(q => ({ q, lapses: 0, practiceAhead: false })),
+        ...aheadTake.map(q => ({ q, lapses: 0, practiceAhead: true })),
+        ...freshTake.map(q => ({ q, lapses: 0, practiceAhead: false }))
+      ];
+      return {
+        items,
+        newCount: freshTake.length,
+        truncated: totalCount > items.length,
+        blockedNewCount: fresh.length - freshAllowed.length
+      };
+    }
+
+    function startFocusSession(level, groupKey, label) {
+      if (QUIZ.length === 0) return;
+      const plan = buildFocusSessionPlan(level, groupKey);
+
+      if (plan.items.length === 0) {
+        renderSimpleReport('warn', plan.blockedNewCount > 0
+          ? `「${label}」は未出題の問題だけが残っていますが、このデッキは1日の新規枚数が先生の設定で固定されており、今日の新規枠を使い切っています。`
+          : `「${label}」には学習できる問題がありません。`);
+        document.getElementById('dashboard-screen').scrollTop = 0;
+        return;
+      }
+
+      const countsTowardNewCap = !currentAllowUserOverride;
+      if (plan.newCount > 0 || plan.truncated) {
+        const lines = [`「${label}」を学習します（${plan.items.length}問）。`];
+        if (plan.truncated) lines.push('', `問題数が多いため、${FOCUS_SESSION_MAX}問までを出題します。`);
+        if (plan.newCount > 0) {
+          lines.push('', `まだ出題されていない新しい問題が ${plan.newCount} 問含まれます。`, '解答すると、以後の復習予定に追加されます。');
+          if (countsTowardNewCap) lines.push('（このデッキでは、今日の新規枠から差し引かれます）');
+        }
+        if (!confirm(lines.join('\n'))) return;
+      }
+
+      sessionQueue = plan.items;
+      sessionMode = 'focus';
+      focusSessionInfo = { label, countsTowardNewCap };
+      enterGameScreen();
+    }
+
+    // 今日の学習・単元別学習で共通のゲーム画面開始処理
+    function enterGameScreen() {
       document.getElementById('dashboard-screen').style.display = 'none';
       document.getElementById('all-clear-screen').style.display = 'none';
       document.getElementById('game-screen').style.display = 'flex';
+
+      const modeLabel = document.getElementById('session-mode-label');
+      if (sessionMode === 'focus' && focusSessionInfo) {
+        modeLabel.textContent = `単元・テーマ別学習：${focusSessionInfo.label}`;
+        modeLabel.classList.remove('hidden');
+      } else {
+        modeLabel.textContent = '';
+        modeLabel.classList.add('hidden');
+      }
+
       hp = 3; combo = 0;
       sessionMistakes = 0;
       sessionPerfectRecorded = false;
@@ -1910,10 +2131,13 @@
 
       deactivateDialogTrap(modal, false);
       deactivateDialogTrap(toast, false);
+      hideSaveErrorModal();
+      saveErrorRetry = null;
       modal.style.display = 'none';
       toast.classList.add('hidden');
       reveal.style.display = 'none';
-      reveal.innerText = '';
+      reveal.textContent = '';
+      reveal.className = 'correct-reveal';
       progressBar.style.transition = 'none';
       progressBar.style.width = '100%';
       document.getElementById('result-next-btn').innerText = '次へ進む (Enter)';
@@ -2045,6 +2269,35 @@
       const sub = document.getElementById('clear-sub');
       const rating = document.getElementById('clear-rating');
 
+      if (sessionMode === 'focus' && focusSessionInfo) {
+        // 単元・テーマ別学習：パーフェクト記録は「今日の学習」だけで数えるため、ここでは記録しない。
+        // 単元名はデータ由来なので innerHTML を使わずテキストノードで組み立てる。
+        const setSubLines = (lines) => {
+          sub.textContent = '';
+          lines.forEach((line, i) => {
+            if (i > 0) sub.appendChild(document.createElement('br'));
+            sub.appendChild(document.createTextNode(line));
+          });
+        };
+        const label = focusSessionInfo.label;
+        if (isPerfect) {
+          icon.innerText = '👑';
+          title.innerText = 'Perfect!';
+          setSubLines([`「${label}」をノーミスで学習しました。`, '（パーフェクト記録は「今日の学習」で数えます）']);
+          rating.innerText = '⭐⭐⭐ Perfect!';
+        } else {
+          icon.innerText = sessionMistakes <= 2 ? '🌟' : '☕️';
+          title.innerText = sessionMistakes <= 2 ? 'Great Job!' : 'Session Complete';
+          setSubLines([`「${label}」の学習が完了しました。`, '間違えた問題は、復習予定が短く組み直されています。']);
+          rating.innerText = sessionMistakes <= 2 ? '⭐⭐ Great!' : '⭐ Good effort!';
+        }
+        document.getElementById('game-screen').style.display = 'none';
+        document.getElementById('all-clear-screen').style.display = 'flex';
+        announceToScreenReader('単元・テーマ別学習が完了しました。');
+        focusElementById('clear-return-btn');
+        return;
+      }
+
       if (isPerfect) {
         recordPerfectSession();
         icon.innerText = '👑';
@@ -2078,6 +2331,9 @@
       }
 
       currentQuestion = sessionQueue[0].q;   // 先頭をピーク（取り出しは採点後に nextQuestion で実施）
+      currentIsPracticeAhead = !!sessionQueue[0].practiceAhead;
+      currentScheduleNote = '';
+      currentUserAnswer = null;
       currentSm2Score = 3;
       currentNextReviewDays = null;
       isAnswerLocked = false;
@@ -2174,17 +2430,29 @@
     }
     function undoLastWord() { if (selectedWords.length > 0) { remainingWords.push(selectedWords.pop()); renderSortBoard(); } }
     function resetSort() { if (selectedWords.length > 0) { remainingWords = remainingWords.concat(selectedWords); selectedWords = []; renderSortBoard(); } }
+    // 正解として受け付ける語順の一覧。correctOrder を必ず先頭に含め、acceptableOrders を重複なく加える。
+    // （acceptableOrders に別解だけを書いたデッキでも、基本の正解が不正解にならないようにする）
+    function getAcceptedOrders(question) {
+      const orders = [question.correctOrder];
+      const seen = new Set([JSON.stringify(question.correctOrder)]);
+      if (Array.isArray(question.acceptableOrders)) {
+        question.acceptableOrders.forEach(order => {
+          const key = JSON.stringify(order);
+          if (!seen.has(key)) { seen.add(key); orders.push(order); }
+        });
+      }
+      return orders;
+    }
+
     function checkSortAnswer() {
       if (isAnswerLocked) return;
-      const submitted = selectedWords.join(' ');
-      // acceptableOrders があれば、そのいずれかと一致すれば正解として扱う。
-      // 無い問題は従来通り correctOrder 一本のみで判定する（挙動は変わらない）。
-      const candidates = (Array.isArray(currentQuestion.acceptableOrders) && currentQuestion.acceptableOrders.length > 0)
-        ? currentQuestion.acceptableOrders
-        : [currentQuestion.correctOrder];
-      const isMatch = candidates.some(order => order.join(' ') === submitted);
+      const submitted = JSON.stringify(selectedWords);
+      const isMatch = getAcceptedOrders(currentQuestion).some(order => JSON.stringify(order) === submitted);
       if (isMatch) handleCorrect();
-      else handleFail('wrong');
+      else {
+        currentUserAnswer = captureCurrentUserAnswer(false);
+        handleFail('wrong');
+      }
     }
 
     // Choice処理
@@ -2204,7 +2472,24 @@
     function checkChoiceAnswer(selected) {
       if (isAnswerLocked) return;
       if (selected === currentQuestion.correctAnswer) handleCorrect();
-      else handleFail('wrong');
+      else {
+        currentUserAnswer = { type: 'choice', choice: selected, timedOut: false };
+        handleFail('wrong');
+      }
+    }
+
+    // 不正解・時間切れ時点の学習者の解答を控える（結果画面での比較表示用）。
+    function captureCurrentUserAnswer(timedOut) {
+      if (!currentQuestion) return null;
+      if (currentQuestion.type === 'sort') {
+        return {
+          type: 'sort',
+          words: [...selectedWords],
+          complete: remainingWords.length === 0 && selectedWords.length > 0,
+          timedOut
+        };
+      }
+      return { type: 'choice', choice: null, timedOut };
     }
 
     // 評価・保存（SM-2：easeFactor でカードごとに間隔を伸縮。セッションをまたぐスケジュールを書く）
@@ -2217,6 +2502,25 @@
       record.easeFactor = Number.isFinite(Number(record.easeFactor)) ? Number(record.easeFactor) : 2.5; // 旧データの移行
       record.interval = Number.isFinite(Number(record.interval)) ? Math.max(0, Math.round(Number(record.interval))) : 0;
       record.repetitions = Number.isFinite(Number(record.repetitions)) ? Math.max(0, Math.floor(Number(record.repetitions))) : 0;
+
+      // 単元・テーマ別学習で、復習日前の問題を先取りで解いた場合の扱い。
+      // SM-2は予定より早い復習を想定していないため、Good で間隔を伸ばすと過大になる。
+      //   Good：予定を変えない / Hard：次回復習を翌学習日へ前倒し / 不正解：通常の Re-learn（下の処理へ）
+      currentScheduleNote = '';
+      if (currentIsPracticeAhead && !isNewRecord && score >= 2) {
+        const existingTime = Number(record.nextReviewTime) || 0;
+        currentScheduleNote = 'unchanged';
+        if (score === 2) {
+          const hardTime = getNextStudyDayReviewTime(1);
+          if (!existingTime || hardTime < existingTime) {
+            record.nextReviewTime = hardTime;
+            currentScheduleNote = 'advanced';
+          }
+        }
+        savedData[progressKey] = record;
+        const savedAhead = safeSaveJSON(STORAGE_KEY, savedData, true);
+        return { ok: savedAhead, nextDays: studyDaysUntil(record.nextReviewTime) };
+      }
 
       // アプリの 1–4 評価を SM-2 の品質 quality(0–5) へ対応づける。
       // Lite v1の通常操作では 1:Re-learn / 2:手動Hard / 3:Good を使用し、Easyは自動判定しない。
@@ -2262,18 +2566,100 @@
       }
 
       if (isNewRecord && !record.firstSeenDate) record.firstSeenDate = studyDateKey(new Date());
+      // 単元・テーマ別学習で導入した新規問題は、今日の学習の新規枠を消費しない
+      // （先生が新規枚数を固定したデッキでは消費する）。
+      if (isNewRecord && sessionMode === 'focus' && focusSessionInfo && !focusSessionInfo.countsTowardNewCap) {
+        record.introducedBy = 'focus';
+      }
       savedData[progressKey] = record;
-      safeSaveJSON(STORAGE_KEY, savedData);
-      recordActivity();                                 // 学習アクティビティを記録
-      return nextIntervalDays;
+      const saved = safeSaveJSON(STORAGE_KEY, savedData, true);
+      return { ok: saved, nextDays: nextIntervalDays };
     }
 
+    // ----------------------------------------------------
+    // 回答の保存（進捗・学習日数・弱点分析）
     // 採点確定時に保存を1回だけ行う。showModal は表示専用にする。
+    // 3つの保存のどれかが失敗したら確定せず null を返す。再試行では「まだ保存できていない部分」だけを
+    // やり直すため、進捗だけ保存済みの状態で再試行しても SM-2 が二重に適用されることはない。
+    // ----------------------------------------------------
+    let pendingAnswerSave = null;   // { question, score, progressDone, nextDays, activityDone, analyticsDone }
+
     function finalizeAnswer(score) {
       if (currentNextReviewDays !== null) return currentNextReviewDays;
-      currentNextReviewDays = calculateAndSaveProgress(score);
-      recordAnswerAnalytics(currentQuestion, score);
-      return currentNextReviewDays;
+      if (!pendingAnswerSave || pendingAnswerSave.question !== currentQuestion || pendingAnswerSave.score !== score) {
+        pendingAnswerSave = { question: currentQuestion, score, progressDone: false, nextDays: null, activityDone: false, analyticsDone: false };
+      }
+      const p = pendingAnswerSave;
+      if (!p.progressDone) {
+        const result = calculateAndSaveProgress(score);
+        if (result.ok) { p.progressDone = true; p.nextDays = result.nextDays; }
+      }
+      if (p.progressDone && !p.activityDone) p.activityDone = recordActivity();
+      if (p.progressDone && !p.analyticsDone) p.analyticsDone = recordAnswerAnalytics(currentQuestion, score);
+
+      if (p.progressDone && p.activityDone && p.analyticsDone) {
+        currentNextReviewDays = p.nextDays;
+        pendingAnswerSave = null;
+        return currentNextReviewDays;
+      }
+      return null;
+    }
+
+    // 保存に成功した場合だけ onSaved を実行する。失敗したら次へ進まず、再保存か中断を選ばせる。
+    function commitAnswer(score, onSaved) {
+      const nextDays = finalizeAnswer(score);
+      if (nextDays !== null) { onSaved(nextDays); return; }
+      showSaveErrorModal(() => commitAnswer(score, onSaved));
+    }
+
+    let saveErrorRetry = null;
+
+    function isSaveErrorOpen() {
+      const modal = document.getElementById('save-error-modal');
+      return modal && modal.style.display === 'flex';
+    }
+
+    function showSaveErrorModal(retry) {
+      saveErrorRetry = retry;
+      const modal = document.getElementById('save-error-modal');
+      // 説明文を実際の保存状態に合わせる（進捗だけ保存済みなら「次回また出題」にはならない）。
+      const progressSaved = !!(pendingAnswerSave && pendingAnswerSave.progressDone);
+      const lines = progressSaved
+        ? ['この回答の復習予定は保存済みですが、学習履歴・弱点分析の一部を保存できませんでした。端末の空き容量が不足しているか、ブラウザの設定で保存が制限されている可能性があります。',
+           '「保存せずに中断する」を選ぶと、未保存の部分は反映されません（復習予定は保存済みです）。']
+        : ['この回答の学習記録を端末に保存できませんでした。端末の空き容量が不足しているか、ブラウザの設定で保存が制限されている可能性があります。',
+           '「保存せずに中断する」を選ぶと、この回答は記録されず、この問題は次回もう一度出題されます。'];
+      const textEl = document.getElementById('save-error-text');
+      textEl.textContent = '';
+      lines.forEach((line, i) => {
+        if (i > 0) textEl.appendChild(document.createElement('br'));
+        textEl.appendChild(document.createTextNode(line));
+      });
+      modal.style.display = 'flex';
+      activateDialogTrap(modal);
+      announceToScreenReader('学習記録を保存できませんでした。もう一度保存するか、保存せずに中断してください。');
+      focusElementById('save-retry-btn');
+    }
+
+    function hideSaveErrorModal() {
+      const modal = document.getElementById('save-error-modal');
+      deactivateDialogTrap(modal, false);
+      modal.style.display = 'none';
+    }
+
+    function retrySaveAnswer() {
+      const retry = saveErrorRetry;
+      saveErrorRetry = null;
+      hideSaveErrorModal();
+      if (retry) retry();
+    }
+
+    // 保存せずに中断：未保存の部分は捨てる（進捗が未保存なら、この問題は次回また出題される）。
+    // returnToDashboard が回答状態を終了させるため、ページを閉じても再保存されない。
+    async function abortUnsavedAnswer() {
+      saveErrorRetry = null;
+      hideSaveErrorModal();
+      await returnToDashboard();
     }
 
     // 不正解・時間切れを統一して扱う：1回の失敗で lapse 扱い、正解と解説を提示して次へ（#2(b)/#4/#5）
@@ -2283,10 +2669,12 @@
       cancelTimer();
       sessionMistakes += 1;
       hp--; combo = 0; updateHeader();
+      if (reason === 'timeout' || !currentUserAnswer) currentUserAnswer = captureCurrentUserAnswer(reason === 'timeout');
       currentSm2Score = 1;                        // SM-2に素直：失敗は grade 1（lapse）
-      const nextDays = finalizeAnswer(currentSm2Score);
       const failTitle = (reason === 'timeout') ? "Time Up." : "Incorrect.";
-      showModal(false, currentSm2Score, currentQuestion.explanation, failTitle, nextDays);
+      commitAnswer(currentSm2Score, nextDays => {
+        showModal(false, currentSm2Score, currentQuestion.explanation, failTitle, nextDays);
+      });
     }
     function handleTimeUp() { handleFail('timeout'); }
 
@@ -2295,6 +2683,110 @@
       return (currentQuestion.type === "sort")
         ? currentQuestion.correctOrder.join(' ')
         : currentQuestion.correctAnswer;
+    }
+
+    // ----------------------------------------------------
+    // 不正解時の「あなたの解答／正解」比較表示（学生要望）
+    // 先頭から1語ずつ比べると、1語ずれただけで後ろが全部「違う」になるため、
+    // 最長共通部分列（LCS）で正解と共通する並びを最大限残し、そこから外れた語だけに印を付ける。
+    // ----------------------------------------------------
+    function lcsMatchFlags(a, b) {
+      const n = a.length; const m = b.length;
+      const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+      for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+          dp[i][j] = (a[i] === b[j]) ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+      }
+      const aFlags = new Array(n).fill(false); const bFlags = new Array(m).fill(false);
+      let i = 0; let j = 0;
+      while (i < n && j < m) {
+        if (a[i] === b[j]) { aFlags[i] = true; bFlags[j] = true; i++; j++; }
+        else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+        else j++;
+      }
+      return { length: dp[0][0], aFlags, bFlags };
+    }
+
+    // acceptableOrders がある問題は、学生の解答に最も近い正解語順と比較する。
+    function pickClosestOrder(words) {
+      const candidates = getAcceptedOrders(currentQuestion);   // 採点と同じ候補を使う（同点なら correctOrder）
+      let best = candidates[0]; let bestLength = -1;
+      candidates.forEach(order => {
+        const length = lcsMatchFlags(words, order).length;
+        if (length > bestLength) { best = order; bestLength = length; }
+      });
+      return best;
+    }
+
+    function appendAnswerRow(container, label, tokens, marks, emptyText) {
+      const row = document.createElement('div'); row.className = 'answer-row';
+      const head = document.createElement('span'); head.className = 'answer-label'; head.textContent = label;
+      const body = document.createElement('span'); body.className = 'answer-tokens';
+      row.appendChild(head);
+      if (!tokens || tokens.length === 0) {
+        const empty = document.createElement('span'); empty.className = 'answer-empty';
+        empty.textContent = emptyText || 'なし';
+        body.appendChild(empty);
+      } else {
+        tokens.forEach((token, index) => {
+          const mark = marks ? marks[index] : '';
+          const span = document.createElement('span');
+          span.className = mark ? `answer-token ${mark}` : 'answer-token';
+          span.textContent = token;
+          body.appendChild(span);
+          if (mark) {
+            // 色や下線だけに頼らず、読み上げでも区別できるようにする
+            const sr = document.createElement('span'); sr.className = 'sr-only';
+            sr.textContent = (mark === 'off') ? '（位置違い）' : '（正しい位置）';
+            body.appendChild(sr);
+          }
+        });
+      }
+      row.appendChild(body);
+      container.appendChild(row);
+    }
+
+    function renderAnswerReveal(container) {
+      container.textContent = '';
+      container.className = 'correct-reveal';
+      const answer = currentUserAnswer;
+      if (!answer) {
+        container.textContent = '正解: ' + getCorrectAnswerText();
+        return;
+      }
+      container.classList.add('compare');
+
+      if (currentQuestion.type === 'sort') {
+        const words = Array.isArray(answer.words) ? answer.words : [];
+        const target = pickClosestOrder(words);
+        if (words.length === 0) {
+          appendAnswerRow(container, 'あなたの解答', null, null, answer.timedOut ? '未解答（時間切れ）' : '未解答');
+          appendAnswerRow(container, '正解', target, null);
+          return;
+        }
+        const { aFlags, bFlags } = lcsMatchFlags(words, target);
+        appendAnswerRow(container, answer.complete ? 'あなたの解答' : 'あなたの解答（途中）', words, aFlags.map(ok => ok ? '' : 'off'));
+        appendAnswerRow(container, '正解', target, bFlags.map(ok => ok ? '' : 'fix'));
+        const legend = document.createElement('p'); legend.className = 'answer-legend';
+        legend.textContent = answer.complete
+          ? '赤い波線は位置が違う語、緑の下線は正解での位置です。'
+          : '赤い波線は位置が違う語、緑の下線は置けていなかった語・正解での位置です。';
+        container.appendChild(legend);
+        return;
+      }
+
+      appendAnswerRow(container, 'あなたの選択', answer.choice ? [answer.choice] : null, null, answer.timedOut ? 'なし（時間切れ）' : 'なし');
+      appendAnswerRow(container, '正解', [currentQuestion.correctAnswer], null);
+    }
+
+    function describeUserAnswerForScreenReader() {
+      const answer = currentUserAnswer;
+      if (!answer) return '';
+      if (answer.type === 'sort') {
+        return (answer.words && answer.words.length > 0) ? `あなたの解答は ${answer.words.join(' ')}。` : 'あなたの解答はありません。';
+      }
+      return answer.choice ? `あなたの選択は ${answer.choice}。` : 'あなたの選択はありません。';
     }
 
     function handleCorrect() {
@@ -2332,8 +2824,7 @@
       clearTimeout(autoAdvanceTimer);
       deactivateDialogTrap(toast, false);
       toast.classList.add('hidden');
-      finalizeAnswer(currentSm2Score);
-      nextQuestion();
+      commitAnswer(currentSm2Score, () => nextQuestion());
     }
     // 正解後に学習者が「難しかった」を選んだ場合だけ Hard に上書きし、解説を表示する。
     function markHard() { currentSm2Score = 2; cancelAutoAdvance(); }
@@ -2343,8 +2834,9 @@
       clearTimeout(autoAdvanceTimer);
       deactivateDialogTrap(toast, false);
       toast.classList.add('hidden');
-      const nextDays = finalizeAnswer(currentSm2Score);
-      showModal(true, currentSm2Score, currentQuestion.explanation, null, nextDays);
+      commitAnswer(currentSm2Score, nextDays => {
+        showModal(true, currentSm2Score, currentQuestion.explanation, null, nextDays);
+      });
     }
 
     // 正解トースト中に急用が入った場合、Good として保存してダッシュボードへ戻る。
@@ -2355,8 +2847,7 @@
       deactivateDialogTrap(toast, false);
       toast.classList.add('hidden');
       currentSm2Score = 3;
-      finalizeAnswer(currentSm2Score);
-      await returnToDashboard();
+      commitAnswer(currentSm2Score, () => { returnToDashboard(); });
     }
 
     function updateHeader() {
@@ -2387,7 +2878,7 @@
         reveal.style.display = 'none';
       } else {
         reveal.style.display = 'block';
-        reveal.innerText = "正解: " + getCorrectAnswerText();
+        renderAnswerReveal(reveal);
       }
 
       if (isRecoveryBreak) {
@@ -2400,16 +2891,20 @@
         nextReviewBadge.style.display = 'inline-block';
         const scoreLabels = { 1: "Re-learn", 2: "Hard", 3: "Good", 4: "Easy" };
         badge.innerText = `評価: ${scoreLabels[sm2Score]}`;
-        nextReviewBadge.innerText = (sm2Score >= 2)
+        let reviewText = (sm2Score >= 2)
           ? (nextDays === 1 ? '次回復習: 次の学習日' : `次回復習: 約 ${nextDays} 学習日後`)
           : '次回復習: 今日中に再出題';
+        if (currentScheduleNote === 'unchanged') reviewText += '（先取り学習のため予定は変更なし）';
+        else if (currentScheduleNote === 'advanced') reviewText += '（前倒ししました）';
+        nextReviewBadge.innerText = reviewText;
       }
 
+      const userAnswerText = describeUserAnswerForScreenReader();
       const announcement = isRecoveryBreak
-        ? `ひと休み。正解は ${getCorrectAnswerText()} です。HPを回復して続けるか、記録して休憩できます。`
+        ? `ひと休み。${userAnswerText}正解は ${getCorrectAnswerText()} です。HPを回復して続けるか、記録して休憩できます。`
         : (isCorrect
           ? `正解です。評価は ${sm2Score === 2 ? 'Hard' : 'Good'} です。`
-          : `${failTitle || '不正解'} 正解は ${getCorrectAnswerText()} です。`);
+          : `${failTitle || '不正解'} ${userAnswerText}正解は ${getCorrectAnswerText()} です。`);
       announceToScreenReader(announcement);
       focusElementById('result-next-btn');
     }
@@ -2430,6 +2925,7 @@
       // 直前リピートを避けるため他カードを数枚挟み、lapses 上限で打ち切る（無限ループ防止）。
       if (finished && currentSm2Score === 1 && finished.lapses < MAX_SESSION_LAPSES) {
         finished.lapses += 1;
+        finished.practiceAhead = false;  // 失敗で Re-learn（即時due）になったため、再出題は通常の復習として記録する
         const pos = Math.min(REINSERT_GAP, sessionQueue.length); // 末尾を超えない位置
         sessionQueue.splice(pos, 0, finished);
       }
@@ -2464,6 +2960,7 @@
       const key = event.key;
       if (key === 'Tab' && trapTabWithinDialog(event)) return;
       if (isInteractiveKeyTarget(event.target)) return;
+      if (isSaveErrorOpen()) return;   // 保存失敗の画面では、ボタン操作以外で先へ進ませない
 
       const isAdvanceKey = key === 'Enter' || key === ' ';
 
